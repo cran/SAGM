@@ -1,0 +1,9 @@
+
+export(SAGM)
+export(make_weights)
+
+importFrom( "fastmatrix", "kronecker.prod")
+importFrom( "GIGrvg", "rgig")
+importFrom( "stats", "rgamma", "rnorm", "dnorm", "dunif")
+importFrom( "utils", "setTxtProgressBar", "txtProgressBar")
+importFrom( "mvtnorm", "rmvnorm")
