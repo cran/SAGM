@@ -1,5 +1,5 @@
 
-SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("upper","lower"), zeta = 0.1, kappa = 0.1, c0 = 0.01, c1 = 0.01,
+SAGM <- function (X, W, prior = "ng", constraint = "triangular", triangular = c("upper","lower"), idx_mat = NULL, zeta = 0.1, kappa = 0.1, b0 = 0.01, b1 = 0.01,
                   nBurnin = 1000, nIter = 1000, verbose = TRUE)
 {
   p <- ncol(X)
@@ -12,7 +12,7 @@ SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("
   if(prior == "ng"){ # normal gamma prior (shrinkage)
     alpha <- array(rgamma(2*K*p^2, shape = kappa, rate = kappa),
                    dim = c(p, p, 2*K))
-    omega <- rgamma(1, shape = c0, rate = c1)
+    omega <- rgamma(1, shape = b0, rate = b1)
     omega <- omega^2
 
     Results <- list(Theta = array(dim = c(p, p, nIter)),
@@ -72,7 +72,7 @@ SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("
       C <- solve((S22) * solve(Theta11) + diag(1/c(lambda_sq_12 *
                                                      tau_sq)))
       C <- (C + t(C))/2
-      beta <- rmvnorm(1, -C %*% S21, C)
+      beta <- mvtnorm::rmvnorm(1, -C %*% S21, C)
       Theta[-i, i] <- Theta[i, -i] <- beta
       Theta[i, i] <- gamma + t(t(beta)) %*% solve(Theta11) %*%
         t(beta)
@@ -91,7 +91,7 @@ SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("
 
     if(prior == "ng"){
       # Update omega
-      omega <- rgamma(1, shape = c0 + kappa*2*K*p^2, rate = c1 + kappa/2 +
+      omega <- rgamma(1, shape = b0 + kappa*2*K*p^2, rate = b1 + kappa/2 +
                         sum(alpha[, ,]))
     }
 
@@ -103,7 +103,7 @@ SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("
 
               if(prior == "ng"){
                 # Update alpha
-                alpha[i,j,k] <- rgig(n=1,lambda=kappa - 0.5, Psi[i, j, k]^2, kappa*omega)
+                alpha[i,j,k] <- GIGrvg::rgig(n=1,lambda=kappa - 0.5, Psi[i, j, k]^2, kappa*omega)
               }
 
 
@@ -242,7 +242,7 @@ SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("
 
                 if(prior == "ng"){
                   # Update alpha
-                  alpha[i,j,k] <- rgig(n=1,lambda=kappa - 0.5, Psi[i, j, k]^2, kappa*omega)
+                  alpha[i,j,k] <- GIGrvg::rgig(n=1,lambda=kappa - 0.5, Psi[i, j, k]^2, kappa*omega)
                 }
 
 
@@ -421,7 +421,7 @@ SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("
 
                 if(prior == "ng"){
                   # Update alpha
-                  alpha[i,j,k] <- rgig(n=1,lambda=kappa - 0.5, Psi[i, j, k]^2, kappa*omega)
+                  alpha[i,j,k] <- GIGrvg::rgig(n=1,lambda=kappa - 0.5, Psi[i, j, k]^2, kappa*omega)
                 }
 
 
@@ -599,6 +599,142 @@ SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("
           }
         }
       }
+    } else if(constraint == "informative"){
+      # idx_mat is een matrix met de indices (row = idx_mat[,1], col = idx_mat[,2], psi = idx_mat[,3], mu = idx_mat[,4])
+      #idx_mat matrix
+      for(k in 1:2*K){
+        for(i in 1:p){
+          for(j in 1:p){
+            # check if informative prior is assigned to current psi
+            #if(all(c(i,j,k) %in% idx_mat)){
+             if(any(rowSums(idx_mat[,c(1,2,3)] == matrix(rep(c(i,j,k), nrow(idx_mat)), nrow = nrow(idx_mat), byrow = T)) == 3)){
+              # sample initial proposal value
+              psi_p <- rnorm(1, Psi[i, j, k], zeta)
+
+              # helper function to check stability conditions
+
+              compdet <- function(psi_p){
+                Psi_lik <- Psi[, , k]
+                Psi_lik[i, j] <- psi_p
+                Psi_new <- Psi
+                Psi_new[, , k] <- Psi_lik
+
+                detsumnew <- matrix(0, S_obs*p, S_obs*p)
+
+                for(kk in 1:2*K){
+                  detsumnew <- detsumnew + kronecker.prod(t(Psi_new[, , kk]), W[, , kk])
+                }
+
+                return(log(det(diag(S_obs*p) - detsumnew)))
+              }
+
+              # faster to compute positive determinant than eigenvalues
+              while(is.nan(suppressWarnings(compdet(psi_p)))){
+                psi_p <- rnorm(1, Psi[i, j, k], zeta)
+              }
+              # change Psi in likelihood
+              Psi_lik <- Psi[, , k]
+              Psi_lik[i, j] <- psi_p
+              Psi_new <- Psi
+              Psi_new[, , k] <- Psi_lik
+
+              expsumnew <- matrix(0, S_obs, p)
+              expsumold <- matrix(0, S_obs, p)
+              detsumnew <- matrix(0, S_obs*p, S_obs*p)
+              detsumold <- matrix(0, S_obs*p, S_obs*p)
+
+              for(kk in 1:2*K){
+                expsumnew <- expsumnew + W[, , kk] %*% X %*% Psi_new[, , kk]
+                expsumold <- expsumold + W[, , kk] %*% X %*% Psi[, , kk]
+                detsumnew <- detsumnew + kronecker.prod(t(Psi_new[, , kk]), W[, , kk])
+                detsumold <- detsumold + kronecker.prod(t(Psi[, , kk]), W[, , kk])
+              }
+
+              # log likelihoods
+              logliknew <- log(det(diag(S_obs*p) - detsumnew)) - 0.5*sum(diag(Theta %*% crossprod(X - expsumnew)))
+              loglikold <- log(det(diag(S_obs*p) - detsumold)) - 0.5*sum(diag(Theta %*% crossprod(X - expsumold)))
+
+              # log priors (tight informative priors)
+              logpriornew <- dnorm(psi_p, idx_mat[rowSums(idx_mat[,c(1,2,3)] == matrix(rep(c(i,j,k), nrow(idx_mat)), nrow = nrow(idx_mat), byrow = T)) == 3,4], idx_mat[rowSums(idx_mat[,c(1,2,3)] == matrix(rep(c(i,j,k), nrow(idx_mat)), nrow = nrow(idx_mat), byrow = T)) == 3,5], log = TRUE)
+              logpriorold <- dnorm(Psi[i, j, k], idx_mat[rowSums(idx_mat[,c(1,2,3)] == matrix(rep(c(i,j,k), nrow(idx_mat)), nrow = nrow(idx_mat), byrow = T)) == 3,4], idx_mat[rowSums(idx_mat[,c(1,2,3)] == matrix(rep(c(i,j,k), nrow(idx_mat)), nrow = nrow(idx_mat), byrow = T)) == 3,5], log = TRUE)
+
+              if(logliknew + logpriornew > loglikold + logpriorold){
+                accpt_rate <- accpt_rate+1
+                Psi[i, j, k] <-  psi_p
+              }
+            } else{
+              if(prior == "ng"){
+                # Update alpha
+                alpha[i,j,k] <- GIGrvg::rgig(n=1,lambda=kappa - 0.5, Psi[i, j, k]^2, kappa*omega)
+              }
+
+
+              # sample initial proposal value
+              psi_p <- rnorm(1, Psi[i, j, k], zeta)
+
+              # helper function to check stability conditions
+
+              compdet <- function(psi_p){
+                Psi_lik <- Psi[, , k]
+                Psi_lik[i, j] <- psi_p
+                Psi_new <- Psi
+                Psi_new[, , k] <- Psi_lik
+
+                detsumnew <- matrix(0, S_obs*p, S_obs*p)
+
+                for(kk in 1:2*K){
+                  detsumnew <- detsumnew + kronecker.prod(t(Psi_new[, , kk]), W[, , kk])
+                }
+
+                return(log(det(diag(S_obs*p) - detsumnew)))
+              }
+
+              # faster to compute positive determinant than eigenvalues
+              while(is.nan(suppressWarnings(compdet(psi_p)))){
+                psi_p <- rnorm(1, Psi[i, j, k], zeta)
+              }
+              # change Psi in likelihood
+              Psi_lik <- Psi[, , k]
+              Psi_lik[i, j] <- psi_p
+              Psi_new <- Psi
+              Psi_new[, , k] <- Psi_lik
+
+              expsumnew <- matrix(0, S_obs, p)
+              expsumold <- matrix(0, S_obs, p)
+              detsumnew <- matrix(0, S_obs*p, S_obs*p)
+              detsumold <- matrix(0, S_obs*p, S_obs*p)
+
+              for(kk in 1:2*K){
+                expsumnew <- expsumnew + W[, , kk] %*% X %*% Psi_new[, , kk]
+                expsumold <- expsumold + W[, , kk] %*% X %*% Psi[, , kk]
+                detsumnew <- detsumnew + kronecker.prod(t(Psi_new[, , kk]), W[, , kk])
+                detsumold <- detsumold + kronecker.prod(t(Psi[, , kk]), W[, , kk])
+              }
+
+              # log likelihoods
+              logliknew <- log(det(diag(S_obs*p) - detsumnew)) - 0.5*sum(diag(Theta %*% crossprod(X - expsumnew)))
+              loglikold <- log(det(diag(S_obs*p) - detsumold)) - 0.5*sum(diag(Theta %*% crossprod(X - expsumold)))
+
+              # log priors
+              if(prior == "ng"){
+                logpriornew <- dnorm(psi_p, 0, sqrt(2 * (1 / omega) * alpha[i, j, k]), log = TRUE)
+                logpriorold <- dnorm(Psi[i, j, k], 0, sqrt(2 * (1 / omega) * alpha[i, j, k]), log = TRUE)
+              } else if(prior == "normal"){
+                logpriornew <- dnorm(psi_p, 0, 1, log = TRUE)
+                logpriorold <- dnorm(Psi[i, j, k], 0, 1, log = TRUE)
+              } else{
+                logpriornew <- dunif(psi_p, -0.5, 0.5, log = TRUE)
+                logpriorold <- dunif(Psi[i, j, k], -0.5, 0.5, log = TRUE)
+              }
+
+              if(logliknew + logpriornew > loglikold + logpriorold){
+                accpt_rate <- accpt_rate+1
+                Psi[i, j, k] <-  psi_p
+              }
+            }
+          }
+        }
+      }
     }
 
     # save only iterations higher than burning + 1 because that is the point the burnin stops (and we start at iteration 2)
@@ -632,7 +768,7 @@ SAGM <- function(X, W, prior = "ng", constraint = "triangular", triangular = c("
   # for a triangular constraint respectively
   if(constraint == "symmetric"){
     accpt_rate <- accpt_rate/((nIter)*(p*(p+1)))
-  } else if(constraint == "triangular"){
+  } else{
     accpt_rate <- accpt_rate/((nIter)*2*K*p^2)
   }
 
